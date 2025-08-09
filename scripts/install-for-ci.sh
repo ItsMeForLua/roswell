@@ -89,6 +89,8 @@ apt_installed_p () {
         $(pkg info | grep ^$1- >/dev/null 2>&1)
     elif which dpkg >/dev/null; then
         $(dpkg -s "$1" >/dev/null 2>&1)
+    elif which pacman >/dev/null; then
+        $(pacman -Q "$1" >/dev/null 2>&1)
     else
         $(apk info |grep ^$1 >/dev/null 2>&1)
     fi
@@ -101,6 +103,8 @@ apt_unless_installed () {
         elif [ `uname` = "FreeBSD" ]; then
             $SUDO pkg install -y "$1"
             hash -r
+        elif which pacman >/dev/null; then
+            $SUDO pacman -S --noconfirm --needed "$1"
         elif which apt-get >/dev/null; then
             $SUDO -E apt-get -yq update
             $SUDO -E apt-get -yq --no-install-suggests --no-install-recommends --force-yes install "$1"
@@ -136,6 +140,8 @@ install_ecl () {
     fi
 }
 
+
+
 install_roswell_bin () {
     if ! which ros >/dev/null; then
         if uname -s | grep -E "MSYS_NT|MINGW64|MINGW32" >/dev/null; then
@@ -146,6 +152,10 @@ install_roswell_bin () {
                      pacman -S $MINGW_PACKAGE_PREFIX-roswell
                 fi
             fi
+        elif which pacman >/dev/null && uname -s | grep Linux >/dev/null; then
+            # Arch Linux binary installation attempt
+            echo "Attempting to install Roswell from Arch repositories..."
+            $SUDO pacman -S --noconfirm roswell 2>/dev/null || true
         elif uname -s |grep Linux >/dev/null && uname -m |grep x86_64 >/dev/null; then
             if [ "$ROSWELL_INSTALL_DIR" = "/usr/local" ]; then
                 apt_unless_installed curl
@@ -172,10 +182,29 @@ install_roswell_bin () {
 
 install_roswell_src () {
     if ! which ros >/dev/null; then
+        # Install build dependencies based on platform
+        if which pacman >/dev/null && uname -s | grep Linux >/dev/null; then
+            apt_unless_installed curl
+            apt_unless_installed make
+            apt_unless_installed gcc
+            apt_unless_installed autoconf
+            apt_unless_installed automake
+            apt_unless_installed git
+            apt_unless_installed sed
+            apt_unless_installed base-devel
+        else
+            apt_unless_installed libcurl4-openssl-dev
+        fi
+        
         fetch "$ROSWELL_REPO/archive/$ROSWELL_BRANCH.tar.gz" "$ROSWELL_TARBALL_PATH"
         extract -z "$ROSWELL_TARBALL_PATH" "$ROSWELL_DIR"
-        apt_unless_installed libcurl4-openssl-dev
         cd $ROSWELL_DIR
+        
+        # Apply GCC compatibility patch for Arch
+        if which pacman >/dev/null && uname -s | grep Linux >/dev/null; then
+            sed -i 's/extern LVal register_runtime_options();/extern LVal register_runtime_options(struct proc_opt* run);/' src/cmd-run.h
+        fi
+        
         sh bootstrap
         mkdir -p ~/.roswell
         echo "sbcl-bin-version-uri	0	$ROSWELL_PLATFORMHTML_BASE" >> ~/.roswell/config;
@@ -307,17 +336,34 @@ setup_source_regisry () {
 }
 
 
-install_all () {
-   install_roswell
-   install_sbcl_bin
-   install_lisp_dependency
-   install_lisp
-   install_asdf
-   show_setup
-   setup_source_regisry
-   exit 0
+# Function to check critical dependencies ahead of time
+check_critical_dependencies() {
+    local missing=""
+    
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        missing="curl or wget"
+    fi
+    
+    if [ -n "$missing" ]; then
+        echo "✗ Critical dependencies missing: $missing"
+        echo "  These must be installed before continuing."
+        exit 1
+    fi
+    
+    echo "✓ Critical dependencies available"
 }
 
+install_all() {
+    check_critical_dependencies  # Ahead of time verification
+    install_roswell
+    install_sbcl_bin
+    install_lisp_dependency
+    install_lisp
+    install_asdf
+    show_setup
+    setup_source_regisry
+    exit 0
+}
 
 if [ x$CI = "xtrue" ]; then
    if which sudo 2>&1 >/dev/null; then
